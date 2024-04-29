@@ -17,9 +17,9 @@ typedef struct {
 // ----------------------------------------------------------------------------
 
 static DEVICE_INLINE point_xyzz to_point_xyzz(const affine_point *p) {
-	const storage X = p->x;
-	const storage Y = p->y;
-	return {X, Y, ONE_MONTGOMERY, ONE_MONTGOMERY};
+    const storage X = p->x;
+    const storage Y = p->y;
+    return {X, Y, ONE_MONTGOMERY, ONE_MONTGOMERY};
 }
 
 static DEVICE_INLINE affine_point to_affine_point(const point_xyzz *p) {
@@ -38,8 +38,8 @@ static DEVICE_INLINE affine_point to_affine_point(const point_xyzz *p) {
 
 static DEVICE_INLINE affine_point to_montgomery(const affine_point *p) {
     const storage rr = RR;
-	const storage X = mul(&p->x, &rr);
-	const storage Y = mul(&p->y, &rr);
+    const storage X = mul(&p->x, &rr);
+    const storage Y = mul(&p->y, &rr);
     return {X, Y};
 }
 
@@ -68,9 +68,9 @@ static DEVICE_INLINE point_xyzz madd_2008_s(const point_xyzz *p1, const affine_p
 
     const storage U2 = mul(&X2, &ZZ1);  			// U2 = X2*ZZ1   < 2
     const storage U2_red = mul(&U2, &rr);           // transform back to Montgomery space
-	const storage S2 = mul(&Y2, &ZZZ1); 			// S2 = Y2*ZZZ1  < 2
+    const storage S2 = mul(&Y2, &ZZZ1); 			// S2 = Y2*ZZZ1  < 2
     const storage S2_red = mul(&S2, &rr);           // transform back to Montgomery space
-	const storage P = sub(&U2_red, &X1);    		// P = U2-U1     < 2
+    const storage P = sub(&U2_red, &X1);    		// P = U2-U1     < 2
     const storage R = sub(&S2_red, &Y1);    		// R = S2-S1     < 2
     const storage PP = sqr(&P);       				// PP = P^2        < 2
     const storage PPP = mul(&P, &PP);               // PPP = P*PP      < 2
@@ -85,7 +85,7 @@ static DEVICE_INLINE point_xyzz madd_2008_s(const point_xyzz *p1, const affine_p
     const storage t5 = mul(&R, &t3);     			// t5 = R*t3          < 2
     const storage Y3 = sub(&t5, &t4);    			// Y3 = t5-t4         < 2
 
-	const storage ZZ3 = mul(&ZZ1, &PP);    			// ZZ3 = ZZ1*PP       < 2
+    const storage ZZ3 = mul(&ZZ1, &PP);    			// ZZ3 = ZZ1*PP       < 2
     const storage ZZZ3 = mul(&ZZZ1, &PPP); 			// ZZZ3 = ZZZ1*PPP    < 2
 
     return {X3, Y3, ZZ3, ZZZ3};

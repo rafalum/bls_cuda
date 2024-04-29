@@ -8,7 +8,8 @@
 // Mostly taken from: github.com/matter-labs/era-bellmann
 // ----------------------------------------------------------------------------
 
-template <unsigned OPS_COUNT = UINT32_MAX, bool CARRY_IN = false, bool CARRY_OUT = false> struct carry_chain {
+template <unsigned OPS_COUNT = UINT32_MAX, bool CARRY_IN = false, bool CARRY_OUT = false> 
+struct carry_chain {
     unsigned index;
 
     constexpr DEVICE_INLINE carry_chain() : index(0) {}
@@ -40,7 +41,8 @@ template <unsigned OPS_COUNT = UINT32_MAX, bool CARRY_IN = false, bool CARRY_OUT
 
 };
 
-template <bool SUBTRACT, bool CARRY_OUT> static constexpr DEVICE_INLINE uint32_t add_sub_limbs(storage *rs, const storage *xs, const storage *ys) {
+template <bool SUBTRACT, bool CARRY_OUT> 
+static constexpr DEVICE_INLINE uint32_t add_sub_limbs(storage *rs, const storage *xs, const storage *ys) {
     const uint32_t *x = xs->limbs;
     const uint32_t *y = ys->limbs;
     uint32_t *r = rs->limbs;
@@ -53,16 +55,16 @@ template <bool SUBTRACT, bool CARRY_OUT> static constexpr DEVICE_INLINE uint32_t
     return SUBTRACT ? chain.sub(0, 0) : chain.add(0, 0);
   }
 
-  static DEVICE_INLINE storage sub(const storage *xs, const storage *ys) {
+static DEVICE_INLINE storage sub(const storage *xs, const storage *ys) {
 
-	storage ret;
-	const storage modulus = MODULUS;
+    storage ret;
+    const storage modulus = MODULUS;
 
-	uint32_t carry = add_sub_limbs<true, true>(&ret, xs, ys);
-	if(carry != 0) {
-		add_sub_limbs<false, false>(&ret, &ret, &modulus);
-	}
-	return ret;
+    uint32_t carry = add_sub_limbs<true, true>(&ret, xs, ys);
+    if(carry != 0) {
+        add_sub_limbs<false, false>(&ret, &ret, &modulus);
+    }
+    return ret;
 }
 
 static constexpr DEVICE_INLINE bool is_odd(const storage &xs) { 
@@ -199,54 +201,54 @@ static DEVICE_INLINE void mad_n_redc(uint32_t *even, uint32_t *odd, const uint32
 
 static DEVICE_INLINE storage montmul_raw(const uint32_t *a, const uint32_t *b) {
 
-	storage ret;
+    storage ret;
     const storage modulus = MODULUS;
 
-	uint32_t *even = ret.limbs;
-	__align__(8) uint32_t odd[TLC + 1];
-	size_t i;
-	#pragma unroll
-	for (i = 0; i < TLC; i += 2) {
-		mad_n_redc(&even[0], &odd[0], a, b[i], i == 0);
-		mad_n_redc(&odd[0], &even[0], a, b[i + 1]);
-	}
-	// merge |even| and |odd|
-	even[0] = ptx::add_cc(even[0], odd[1]);
-	#pragma unroll
-	for (i = 1; i < TLC - 1; i++)
-		even[i] = ptx::addc_cc(even[i], odd[i + 1]);
-	even[i] = ptx::addc(even[i], 0);
+    uint32_t *even = ret.limbs;
+    __align__(8) uint32_t odd[TLC + 1];
+    size_t i;
+    #pragma unroll
+    for (i = 0; i < TLC; i += 2) {
+        mad_n_redc(&even[0], &odd[0], a, b[i], i == 0);
+        mad_n_redc(&odd[0], &even[0], a, b[i + 1]);
+    }
+    // merge |even| and |odd|
+    even[0] = ptx::add_cc(even[0], odd[1]);
+    #pragma unroll
+    for (i = 1; i < TLC - 1; i++)
+        even[i] = ptx::addc_cc(even[i], odd[i + 1]);
+    even[i] = ptx::addc(even[i], 0);
 
-	storage rs;
-  	return add_sub_limbs<true, true>(&rs, &ret, &modulus) ? ret : rs;
+    storage rs;
+    return add_sub_limbs<true, true>(&rs, &ret, &modulus) ? ret : rs;
 
 }
 
 
 static DEVICE_INLINE storage dbl(const storage *xs) {
 
-	storage ret;
-	const storage modulus = MODULUS;
+    storage ret;
+    const storage modulus = MODULUS;
 	
-	const uint32_t *x = xs->limbs;
+    const uint32_t *x = xs->limbs;
 
     uint32_t *r = ret.limbs;
     r[0] = x[0] << 1;
-	#pragma unroll
+    #pragma unroll
     for (unsigned i = 1; i < TLC; i++)
         r[i] = __funnelshift_r(x[i - 1], x[i], 31);
 
-	storage rs;
-  	return add_sub_limbs<true, true>(&rs, &ret, &modulus) ? ret : rs;
+    storage rs;
+    return add_sub_limbs<true, true>(&rs, &ret, &modulus) ? ret : rs;
 }
 
 static DEVICE_INLINE storage sqr(const storage *xs) {
-	// TODO: Implement fast squaring
-	return montmul_raw(xs->limbs, xs->limbs);
+    // TODO: Implement fast squaring
+    return montmul_raw(xs->limbs, xs->limbs);
 }
 
 
 static DEVICE_INLINE storage mul(const storage *a, const storage *b) {
 
-	return montmul_raw(a->limbs, b->limbs);
+    return montmul_raw(a->limbs, b->limbs);
 }

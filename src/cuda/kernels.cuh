@@ -129,9 +129,9 @@ void add_points(point_xyzz *results, const affine_point *points, uint32_t num_po
 
 void accumulate_points(point_xyzz *ret, const affine_point *points, uint32_t num_points, uint32_t num_points_per_thread) {
 
-	// init memory
-	affine_point *points_d;
-	point_xyzz *results_d;
+    // init memory
+    affine_point *points_d;
+    point_xyzz *results_d;
 
     cudaMalloc(&points_d, sizeof(affine_point) * num_points);
     cudaMalloc(&results_d, sizeof(point_xyzz) * num_points / num_points_per_thread);

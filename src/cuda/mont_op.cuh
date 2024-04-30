@@ -100,7 +100,7 @@ static constexpr DEVICE_INLINE bool is_zero(const storage &xs) {
     return limbs_or == 0;
 }
 
-static constexpr DEVICE_INLINE storage div_by_2(const storage &xs) {
+static DEVICE_INLINE storage div_by_2(const storage &xs) {
     const uint32_t *x = xs.limbs;
     storage ret = {};
     uint32_t *r = ret.limbs;
@@ -114,7 +114,7 @@ static constexpr DEVICE_INLINE storage div_by_2(const storage &xs) {
   	return add_sub_limbs<true, true>(&rs, &ret, &modulus) ? ret : rs;
 }
 
-static constexpr DEVICE_INLINE storage inverse(const storage &xs) {
+static DEVICE_INLINE storage inverse(const storage &xs) {
     if (is_zero(xs))
       return xs;
     constexpr storage one = {1};

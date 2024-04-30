@@ -1,8 +1,58 @@
+#include <stdlib.h>
+#include <gmp.h>
+#include <cstdint>
+#include <time.h>
+
 #include "cuda/kernels.cuh"
+
+void read_points_from_file(affine_point *points, uint32_t num_points) {
+
+    FILE *file;
+    char buffer[130];
+    mpz_t big_num;
+
+    // Initialize GMP integer
+    mpz_init(big_num);
+
+    // Open the file
+    file = fopen("bls12-381_points.txt", "r");
+    if (file == NULL) {
+        perror("Error opening file");
+        return;
+    }
+
+    // Read points from the file
+    int i = 0;
+    while (i < 2 * num_points && fscanf(file, "%s\n", buffer) == 1) {
+        mpz_set_str(big_num, buffer, 10); // Read the big number in decimal
+
+        // Extract limbs from the big number
+        for (int j = 0; j < TLC; j+=2) {
+            mp_limb_t limb = mpz_getlimbn(big_num, j / 2);
+            //
+            if (i % 2 == 0) {
+                points[i / 2].x.limbs[j] = static_cast<uint32_t>(limb & 0xFFFFFFFF);
+                points[i / 2].x.limbs[j + 1] = static_cast<uint32_t>((limb >> 32) & 0xFFFFFFFF);
+
+            } else {
+                points[i / 2].y.limbs[j] = static_cast<uint32_t>(limb & 0xFFFFFFFF);
+                points[i / 2].y.limbs[j + 1] = static_cast<uint32_t>((limb >> 32) & 0xFFFFFFFF);
+            }
+        }
+
+        i++;
+    }
+
+    // Close the file
+    fclose(file);
+    mpz_clear(big_num);
+}
+
 
 int main() {
 	// Sample random points
     int num_points = 1024 * 64;
+    int num_points_per_thread = 32;
 
     // Allocate page-locked memory for points
 	affine_point* points;
@@ -10,30 +60,74 @@ int main() {
 
     // Allocate page-locked memory for results
 	affine_point* results;
-    cudaHostAlloc(&results, (num_points / 2) * sizeof(affine_point), cudaHostAllocDefault);
+    cudaHostAlloc(&results, (num_points / num_points_per_thread) * sizeof(point_xyzz), cudaHostAllocDefault);
 
-    // Two example points
-    points[0].x = {0xcfddbdf8, 0x56365dd6, 0xb57b3a3c, 0xcddf676a, 0x72722f04, 0x1d282603, 0xbbeaeb7a, 0xab53c52d, 0x0c423985, 0x40f99e95, 0xf710c136, 0x0cb21ad3};
-	points[0].y = {0x22505ca0, 0xf4cfa2a6, 0x7ba4378d, 0x024edad4, 0xdef41b4b, 0x28b1aa29, 0x719d0f96, 0x824ba568, 0x661b1820, 0x27829807, 0xfc392fa7, 0x0942d77a};
 
-    points[1].x = {0xc059f45e, 0xb67bc5e4, 0xab37a3ce, 0x6596f286, 0xcd206c7d, 0x2bc337d9, 0xde4f48d4, 0xf9fa3bc7, 0x4ad369b0, 0x48876aae, 0x17b0ccac, 0x12a7e646};
-    points[1].y = {0x6fd429cf, 0x842828d4, 0x63ad6e2f, 0xd42eb999, 0xeffaf51e, 0xb02fb782, 0xf7e82264, 0x258097a7, 0x2bad7acb, 0x62e4b681, 0x51927003, 0x10cb5475};
+    clock_t start = clock();
+    read_points_from_file(points, num_points);
+    clock_t end = clock();
 
-    for(int i = 2; i < num_points; i+=2) {
-        points[i].x = points[0].x;
-        points[i].y = points[0].y;
+    double cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    printf("Function took %f seconds to execute \n", cpu_time_used);
 
-        points[i + 1].x = points[1].x;
-        points[i + 1].y = points[1].y;
+    cudaStream_t memoryStreamHostToDevice, memoryStreamDeviceToHost, runStream;
+    cudaStreamCreate(&memoryStreamHostToDevice);
+    cudaStreamCreate(&memoryStreamDeviceToHost);
+    cudaStreamCreate(&runStream);
+
+    // print_device_properties();
+
+    // init memory
+    affine_point *pointsRegionA, *pointsRegionB;
+    point_xyzz *resultRegionA, *resultRegionB;
+
+    cudaMalloc(&pointsRegionA, sizeof(affine_point) * num_points);
+    cudaMalloc(&pointsRegionB, sizeof(affine_point) * num_points);
+    cudaMalloc(&resultRegionA, sizeof(point_xyzz) * (num_points / num_points_per_thread));
+    cudaMalloc(&resultRegionB, sizeof(point_xyzz) * (num_points / num_points_per_thread));
+
+    printf("Allocated memory\n");
+
+    for (int i = 0; i < 100; i++) {
+
+        // Wait for the GPU to finish
+        cudaStreamSynchronize(memoryStreamHostToDevice); 
+        cudaStreamSynchronize(runStream);
+        cudaStreamSynchronize(memoryStreamDeviceToHost);
+
+        if(i % 2 == 0) {
+            cudaMemcpyAsync(pointsRegionA, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice, memoryStreamHostToDevice);
+            if(i == 0)
+                continue;
+            accumulate_kernel<<<64, 32, 0, runStream>>>(resultRegionB, pointsRegionB, num_points);
+            cudaMemcpyAsync(results, resultRegionA, sizeof(point_xyzz) * (num_points / num_points_per_thread), cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
+        } else {
+            cudaMemcpyAsync(pointsRegionB, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice, memoryStreamHostToDevice);
+            accumulate_kernel<<<64, 32, 0, runStream>>>(resultRegionA, pointsRegionA, num_points);
+            if(i == 1)
+                continue;
+            cudaMemcpyAsync(results, resultRegionB, sizeof(point_xyzz) * (num_points / num_points_per_thread), cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
+        }
+
+
+        // Copy result back to host
+        //cudaMemcpy(ret, retPtrGPU, sizeof(storage) * (num_points / 2), cudaMemcpyDeviceToHost);
+
     }
 
-	add_points(results, points, num_points);
+    // Destroy streams
+    cudaStreamDestroy(memoryStreamDeviceToHost);
+    cudaStreamDestroy(memoryStreamHostToDevice);
+    cudaStreamDestroy(runStream);
 
-	printf("Results x:\n");
-	print_storage(&results[0].x);
+    printf("Destroyed streams\n");
 
-	printf("Results y:\n");
-	print_storage(&results[0].y);
+    // Free memory 
+    cudaFree(pointsRegionA);
+    cudaFree(pointsRegionB);
+    cudaFree(resultRegionA);
+    cudaFree(resultRegionB);
+
 
     // Free allocated memory
     cudaFreeHost(points);

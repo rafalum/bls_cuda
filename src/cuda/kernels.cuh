@@ -66,7 +66,7 @@ __global__ void accumulate_kernel(point_xyzz *results, const affine_point *point
 
 	uint32_t num_points_to_accumulate = num_points / gridDim.x / blockDim.x;
 
-	for (uint32_t j = 2 * globalThreadId; j < num_points; j += 2 * globalStride * num_points_to_accumulate) {
+	for (uint32_t j = num_points_to_accumulate * globalThreadId; j < num_points; j += globalStride * num_points_to_accumulate) {
 
 		// Transform into montgomery space
 		affine_point acc = to_montgomery(&points[j]);
@@ -79,7 +79,7 @@ __global__ void accumulate_kernel(point_xyzz *results, const affine_point *point
 			acc_xyzz = madd_2008_s(&acc_xyzz, &points[j + i]);
 
 		}
-        results[j / 2] = acc_xyzz;
+        results[globalThreadId] = acc_xyzz;
 	}
 }
 

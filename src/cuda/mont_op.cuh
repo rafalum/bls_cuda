@@ -127,13 +127,13 @@ static DEVICE_INLINE storage inverse(const storage &xs) {
         while (is_even(u)) {
             u = div_by_2(u);
             if (is_odd(b))
-            add_sub_limbs<false, false>(&b, &b, &modulus);
+            	add_sub_limbs<false, false>(&b, &b, &modulus);
             b = div_by_2(b);
         }
         while (is_even(v)) {
             v = div_by_2(v);
             if (is_odd(c))
-            add_sub_limbs<false, false>(&c, &c, &modulus);
+            	add_sub_limbs<false, false>(&c, &c, &modulus);
             c = div_by_2(c);
         }
         if (lt(v, u)) {

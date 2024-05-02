@@ -94,16 +94,19 @@ __global__ void accumulate_kernel(point_xyzz *results, const affine_point *point
  * @param results pointer to the n results
  * @param points pointer to the array of 2n points 
  * @param num_points total number of points in the array
+ * 
+ * typename T is the type of the results (either affine_point or point_xyzz)
  ***/
-void add_points(point_xyzz *results, const affine_point *points, uint32_t num_points) {
+template <typename T>
+void add_points(T *results, const affine_point *points, uint32_t num_points) {
 
 
     // init memory
     affine_point *points_d;
-    point_xyzz *results_d;
+    T *results_d;
 
     cudaMalloc(&points_d, sizeof(affine_point) * num_points);
-    cudaMalloc(&results_d, sizeof(point_xyzz) * num_points / 2);
+    cudaMalloc(&results_d, sizeof(T) * num_points / 2);
 
     cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
 
@@ -114,7 +117,7 @@ void add_points(point_xyzz *results, const affine_point *points, uint32_t num_po
     cudaDeviceSynchronize();
 
     // Copy result back to host
-    cudaMemcpy(results, results_d, sizeof(point_xyzz) * num_points / 2, cudaMemcpyDeviceToHost);
+    cudaMemcpy(results, results_d, sizeof(T) * num_points / 2, cudaMemcpyDeviceToHost);
 }
 
 /***

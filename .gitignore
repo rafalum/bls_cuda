@@ -1,0 +1,9 @@
+# Test vector files
+bls12-381_points.txt
+test_add_points.txt
+test_accumulate_points.txt
+test_reduce_points.txt
+
+
+main
+test

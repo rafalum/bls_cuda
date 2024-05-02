@@ -1,9 +1,10 @@
 #include <stdlib.h>
 #include <gmp.h>
 #include <cstdint>
-#include "../src/cuda/kernels.cuh"
 
-void read_points_from_file(affine_point *points, uint32_t num_points) {
+#include "../src/host.cu"
+
+void read_points_from_file(affine_point *points, uint32_t num_points, const char* filename) {
 
     FILE *file;
     char buffer[130];
@@ -13,7 +14,7 @@ void read_points_from_file(affine_point *points, uint32_t num_points) {
     mpz_init(big_num);
 
     // Open the file
-    file = fopen("bls12-381_points.txt", "r");
+    file = fopen(filename, "r");
     if (file == NULL) {
         perror("Error opening file");
         return;
@@ -46,6 +47,23 @@ void read_points_from_file(affine_point *points, uint32_t num_points) {
     mpz_clear(big_num);
 }
 
+int check_results(const affine_point *expected, const affine_point *actual, uint32_t num_points) {
+
+    for (int i = 0; i < num_points; i++) {
+        for (int j = 0; j < TLC; j++) {
+            if (expected[i].x.limbs[j] != actual[i].x.limbs[j]) {
+                printf("Error: expected x[%d][%d] = %u, actual x[%d][%d] = %u\n", i, j, expected[i].x.limbs[j], i, j, actual[i].x.limbs[j]);
+                return 1;
+            }
+            if (expected[i].y.limbs[j] != actual[i].y.limbs[j]) {
+                printf("Error: expected y[%d][%d] = %u, actual y[%d][%d] = %u\n", i, j, expected[i].y.limbs[j], i, j, actual[i].y.limbs[j]);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 
 int test_add_points() {
 
@@ -54,19 +72,27 @@ int test_add_points() {
     affine_point *points; // Array to hold points
     cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
 
-    read_points_from_file(points, num_points);
+    read_points_from_file(points, num_points, "bls12-381_points.txt");
 
     // Allocate page-locked memory for results
-    point_xyzz* results;
-    cudaHostAlloc(&results, sizeof(point_xyzz) * num_points / 2, cudaHostAllocDefault);
+    affine_point* results;
+    cudaHostAlloc(&results, sizeof(affine_point) * num_points / 2, cudaHostAllocDefault);
 
     add_points(results, points, num_points);
 
-    printf("Results x:\n");
-    print_storage(&results[0].x);
+    affine_point *expected = (affine_point *)malloc(sizeof(affine_point) * num_points / 2);
+    read_points_from_file(expected, num_points / 2, "test_add_points.txt");
 
-    printf("Results y:\n");
-    print_storage(&results[0].y);
+    if (check_results(expected, results, num_points / 2) != 0) {
+        return 1;
+    }
+
+    printf("Test Add Points: passed!\n");
+
+    // Free allocated memory
+    cudaFreeHost(points);
+    cudaFreeHost(results);
+    free(expected);
 
     return 0;
 }
@@ -75,12 +101,12 @@ int test_add_points() {
 int test_accumulate_points() {
 
     int num_points = 64 * 1024;
-    int num_points_per_thread = 16;
+    int num_points_per_thread = 32;
     
     affine_point *points; // Array to hold points
     cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
 
-    read_points_from_file(points, num_points);
+    read_points_from_file(points, num_points, "bls12-381_points.txt");
 
     // Allocate page-locked memory for results
     point_xyzz* results;
@@ -88,21 +114,70 @@ int test_accumulate_points() {
 
     accumulate_points(results, points, num_points, num_points_per_thread);
 
-    printf("Results x:\n");
-    print_storage(&results[0].x);
+    affine_point *results_affine = (affine_point *)malloc(sizeof(affine_point) * num_points / num_points_per_thread);
+    for (int i = 0; i < num_points / num_points_per_thread; i++) {
+        affine_point result_affine = host::to_affine_point(&results[i]);
+        results_affine[i] = host::from_montgomery(&result_affine);
+    }
 
-    printf("Results y:\n");
-    print_storage(&results[0].y);
+    affine_point *expected = (affine_point *)malloc(sizeof(affine_point) * num_points / num_points_per_thread);
+    read_points_from_file(expected, num_points / num_points_per_thread, "test_accumulate_points.txt");
 
+    if (check_results(expected, results_affine, num_points / num_points_per_thread) != 0) {
+        return 1;
+    }
+
+    printf("Test Accumulate Points: passed!\n");
 
     // Free allocated memory
     cudaFreeHost(points);
     cudaFreeHost(results);
+    free(results_affine);
+    free(expected);
 
     return 0;
 
 }
 
+int test_reduce_points() {
+    
+    int num_points = 64 * 1024;
+    int num_points_per_thread = 32;
+    
+    affine_point *points; // Array to hold points
+    cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
+
+    read_points_from_file(points, num_points, "bls12-381_points.txt");
+
+    // Allocate page-locked memory for results
+    point_xyzz* results;
+    cudaHostAlloc(&results, sizeof(point_xyzz) * num_points / num_points_per_thread, cudaHostAllocDefault);
+
+    accumulate_points(results, points, num_points, num_points_per_thread);
+
+    affine_point result = host_reduce(results, num_points / num_points_per_thread);
+
+    affine_point *expected = (affine_point *)malloc(sizeof(affine_point));
+    read_points_from_file(expected, 1, "test_reduce_points.txt");
+
+    if (check_results(expected, &result, 1) != 0) {
+        return 1;
+    }
+
+    printf("Test Reduce Points: passed!\n");
+
+    // Free allocated memory
+    cudaFreeHost(points);
+    cudaFreeHost(results);
+    free(expected);
+
+    return 0;
+    
+    
+}
+
 int main() {
-    return test_add_points();
+    test_add_points();
+    test_accumulate_points();
+    test_reduce_points();
 }

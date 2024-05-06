@@ -172,7 +172,7 @@ static constexpr HOST_INLINE bool eq(const storage &xs, const storage &ys) {
     return carry;
   }
 
-  static constexpr HOST_INLINE storage inverse(const storage &xs) {
+  static HOST_INLINE storage inverse(const storage &xs) {
     if (host::is_zero(xs))
       return xs;
     constexpr storage one = {1};
@@ -205,7 +205,7 @@ static constexpr HOST_INLINE bool eq(const storage &xs, const storage &ys) {
     return host::eq(u, one) ? b : c;
   }
 
-  static constexpr HOST_INLINE storage mul(const storage *xs, const storage *ys) {
+  static HOST_INLINE storage mul(const storage *xs, const storage *ys) {
 
     const uint32_t *x = xs->limbs;
     constexpr storage modulus = MODULUS;
@@ -232,7 +232,7 @@ static constexpr HOST_INLINE bool eq(const storage &xs, const storage &ys) {
   }
 
 
-  static constexpr HOST_INLINE storage sqr(const storage *xs) {
+  static HOST_INLINE storage sqr(const storage *xs) {
       return host::mul(xs, xs);
   }
 

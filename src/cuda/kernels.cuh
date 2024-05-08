@@ -83,6 +83,27 @@ __global__ void accumulate_kernel(point_xyzz *results, const affine_point *point
 	}
 }
 
+// Adds two xyzz points and returns the result in xyzz coordinates
+__global__ void accumulate_kernel(point_xyzz *results, const point_xyzz *points, uint32_t num_points) {
+
+	uint32_t globalThreadId = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t globalStride = blockDim.x * gridDim.x;
+
+	uint32_t num_points_to_accumulate = num_points / gridDim.x / blockDim.x;
+
+	for (uint32_t j = num_points_to_accumulate * globalThreadId; j < num_points; j += globalStride * num_points_to_accumulate) {
+
+		point_xyzz acc_xyzz = points[j];
+
+		for(uint32_t i = 1; i < num_points_to_accumulate; i++) {
+			// Accumulate the points
+			acc_xyzz = add_2008_s(&acc_xyzz, &points[j + i]);
+
+		}
+        results[globalThreadId] = acc_xyzz;
+	}
+}
+
 // ----------------------------------------------------------------------------
 // Kernel starters
 // ----------------------------------------------------------------------------

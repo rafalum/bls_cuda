@@ -2,55 +2,33 @@
 #include <gmp.h>
 #include <cstdint>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/mman.h>
+#include <semaphore.h>
+#include <unistd.h>
+#include <cstring>
+#include <signal.h>
 
 #include "host.cu"
 
-void read_points_from_file(affine_point *points, uint32_t num_points) {
 
-    FILE *file;
-    char buffer[130];
-    mpz_t big_num;
+volatile sig_atomic_t running = 1;
 
-    // Initialize GMP integer
-    mpz_init(big_num);
-
-    // Open the file
-    file = fopen("bls12-381_points.txt", "r");
-    if (file == NULL) {
-        perror("Error opening file");
-        return;
-    }
-
-    // Read points from the file
-    int i = 0;
-    while (i < 2 * num_points && fscanf(file, "%s\n", buffer) == 1) {
-        mpz_set_str(big_num, buffer, 10); // Read the big number in decimal
-
-        // Extract limbs from the big number
-        for (int j = 0; j < TLC; j+=2) {
-            mp_limb_t limb = mpz_getlimbn(big_num, j / 2);
-            //
-            if (i % 2 == 0) {
-                points[i / 2].x.limbs[j] = static_cast<uint32_t>(limb & 0xFFFFFFFF);
-                points[i / 2].x.limbs[j + 1] = static_cast<uint32_t>((limb >> 32) & 0xFFFFFFFF);
-
-            } else {
-                points[i / 2].y.limbs[j] = static_cast<uint32_t>(limb & 0xFFFFFFFF);
-                points[i / 2].y.limbs[j + 1] = static_cast<uint32_t>((limb >> 32) & 0xFFFFFFFF);
-            }
-        }
-
-        i++;
-    }
-
-    // Close the file
-    fclose(file);
-    mpz_clear(big_num);
+void sigint_handler(int sig) {
+    running = 0; // Set the flag to false to exit the loop
 }
 
 
-
 int main() {
+
+    // Register signal handler
+    struct sigaction sa;
+    sa.sa_handler = sigint_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+
 	// Sample random points
     int num_points = 1024 * 64;
     int num_intermediate_results_stage1 = 2048;
@@ -63,6 +41,45 @@ int main() {
     bool newStateRegionA[6] = {false, false, false, false, false, false};
     bool newStateRegionB[6] = {false, false, false, false, false, false};
 
+    // Initialize shared memory for points and result
+    affine_point *shm_points, *shm_results;
+    sem_t *sem_points_full, *sem_points_empty;
+    sem_t *sem_results_full, *sem_results_empty;
+    int fd_points, fd_results;
+
+    // Open the shared memory
+    fd_points = shm_open("/bls_shared_points", O_CREAT | O_RDWR, 0666);
+    fd_results = shm_open("/bls_shared_results", O_CREAT | O_RDWR, 0666);
+    if (fd_points == -1 || fd_results == -1) {
+        perror("shm_open");
+        exit(EXIT_FAILURE);
+    }
+
+    // Size the shared memory
+    if (ftruncate(fd_points, num_points * sizeof(affine_point)) == -1 || ftruncate(fd_results, sizeof(affine_point)) == -1) {
+        perror("ftruncate");
+        exit(EXIT_FAILURE);
+    }
+
+    // Map the shared memory
+    shm_points = (affine_point *) mmap(NULL, num_points * sizeof(affine_point), PROT_READ, MAP_SHARED, fd_points, 0);
+    shm_results = (affine_point *) mmap(NULL, sizeof(affine_point), PROT_READ | PROT_WRITE, MAP_SHARED, fd_results, 0);
+    if (shm_points == MAP_FAILED || shm_results == MAP_FAILED) {
+        perror("mmap");
+        exit(EXIT_FAILURE);
+    }
+
+    // Open semaphores
+    sem_points_full = sem_open("/sem_points_full", O_CREAT, 0666, 0);
+    sem_points_empty = sem_open("/sem_points_empty", O_CREAT, 0666, 1);
+    sem_results_full = sem_open("/sem_results_full", O_CREAT, 0666, 0);
+    sem_results_empty = sem_open("/sem_results_empty", O_CREAT, 0666, 1);
+    if (sem_points_full == SEM_FAILED || sem_points_empty == SEM_FAILED || sem_results_full == SEM_FAILED || sem_results_empty == SEM_FAILED) {
+        perror("sem_open");
+        exit(EXIT_FAILURE);
+    }
+
+
     // Allocate page-locked memory for points
 	affine_point* points;
     cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
@@ -73,14 +90,7 @@ int main() {
     point_xyzz* reduceB;
     cudaHostAlloc(&reduceB, num_results * sizeof(point_xyzz), cudaHostAllocDefault);
 
-
-    clock_t start = clock();
-    read_points_from_file(points, num_points);
-    clock_t end = clock();
-
-    double cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    printf("Function took %f seconds to execute \n", cpu_time_used);
-
+    // Create the streams for the 6 stages
     cudaStream_t memoryStreamHostToDevice, memoryStreamDeviceToHost;
     cudaStream_t kernel1, kernel2, kernel3;
     cudaStreamCreate(&memoryStreamHostToDevice);
@@ -89,16 +99,11 @@ int main() {
     cudaStreamCreate(&kernel2);
     cudaStreamCreate(&kernel3);
 
-    // print_device_properties();
-
-    // init memory
+    // Initialize the different memory regions on the device
     affine_point *pointsRegionA, *pointsRegionB;
     point_xyzz *intermediateResultsStage1RegionA, *intermediateResultsStage1RegionB;
     point_xyzz *intermediateResultsStage2RegionA, *intermediateResultsStage2RegionB;
     point_xyzz *resultsRegionA, *resultsRegionB;
-
-    affine_point resA;
-    affine_point resB;
 
     cudaMalloc(&pointsRegionA, sizeof(affine_point) * num_points);
     cudaMalloc(&pointsRegionB, sizeof(affine_point) * num_points);
@@ -109,11 +114,13 @@ int main() {
     cudaMalloc(&resultsRegionA, sizeof(point_xyzz) * num_results);
     cudaMalloc(&resultsRegionB, sizeof(point_xyzz) * num_results);
 
-    printf("Allocated memory\n");
+    affine_point resA;
+    affine_point resB;
 
-    bool new_data = true;
+    sleep(1);
 
-    for (int i = 0; i < 100; i++) {
+    bool new_data = false;
+    while (running) {
 
         // Wait for the GPU to finish
         cudaStreamSynchronize(memoryStreamHostToDevice); 
@@ -122,10 +129,14 @@ int main() {
         cudaStreamSynchronize(kernel2);
         cudaStreamSynchronize(kernel3);
 
-        new_data = true;
-
-        if (i % 7 == 0) {
+        if (sem_trywait(sem_points_full) == -1) {
+            // No new data
             new_data = false;
+        } else {
+            // New data
+            new_data = true;
+            memcpy(points, shm_points, num_points * sizeof(affine_point));
+            sem_post(sem_points_empty);
         }
 
         // Stage 1: Copy points to device
@@ -195,9 +206,15 @@ int main() {
         if (oldStateRegionA[5]) {
             // new results in resA
             newStateRegionA[5] = false;
+            sem_wait(sem_results_empty);
+            memcpy(shm_results, &resA, sizeof(affine_point));
+            sem_post(sem_results_full);
         } else if (oldStateRegionB[5]) {
             // new results in resB
             newStateRegionB[5] = false;
+            sem_wait(sem_results_empty);
+            memcpy(shm_results, &resB, sizeof(affine_point));
+            sem_post(sem_results_full);
         }
 
         // Update state
@@ -227,6 +244,21 @@ int main() {
     cudaFreeHost(points);
     cudaFreeHost(resultsRegionA);
     cudaFreeHost(resultsRegionB);
+
+
+    // Clean up shared memory and semaphores
+    munmap(shm_points, num_points * sizeof(affine_point));
+    munmap(shm_results, sizeof(affine_point));
+    close(fd_points);
+    close(fd_results);
+    sem_close(sem_points_full);
+    sem_close(sem_points_empty);
+    shm_unlink("/bls_shared_points");
+    shm_unlink("/bls_shared_results");
+    sem_unlink("/sem_points_full");
+    sem_unlink("/sem_points_empty");
+    sem_unlink("/sem_results_full");
+    sem_unlink("/sem_results_empty");
 
 	return 0;
 

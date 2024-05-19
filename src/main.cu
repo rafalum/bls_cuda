@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <signal.h>
+#include <math.h>
 
 #include "host.cu"
 
@@ -31,15 +32,15 @@ int main() {
 
 	// Sample random points
     int num_points = 1024 * 64;
-    int num_intermediate_results_stage1 = 2048;
-    int num_intermediate_results_stage2 = 256;
     int num_results = 32;
 
-    bool oldStateRegionA[6] = {false, false, false, false, false, false};
-    bool oldStateRegionB[6] = {false, false, false, false, false, false};
+    int num_kernel_calls = log2(num_points / num_results);
 
-    bool newStateRegionA[6] = {false, false, false, false, false, false};
-    bool newStateRegionB[6] = {false, false, false, false, false, false};
+    bool oldStateRegionA[4] = {false, false, false, false};
+    bool oldStateRegionB[4] = {false, false, false, false};
+
+    bool newStateRegionA[4] = {false, false, false, false};
+    bool newStateRegionB[4] = {false, false, false, false};
 
     // Initialize shared memory for points and result
     affine_point *shm_points, *shm_results;
@@ -92,27 +93,28 @@ int main() {
 
     // Create the streams for the 6 stages
     cudaStream_t memoryStreamHostToDevice, memoryStreamDeviceToHost;
-    cudaStream_t kernel1, kernel2, kernel3;
+    cudaStream_t kernel;
     cudaStreamCreate(&memoryStreamHostToDevice);
     cudaStreamCreate(&memoryStreamDeviceToHost);
-    cudaStreamCreate(&kernel1);
-    cudaStreamCreate(&kernel2);
-    cudaStreamCreate(&kernel3);
+    cudaStreamCreate(&kernel);
 
     // Initialize the different memory regions on the device
     affine_point *pointsRegionA, *pointsRegionB;
-    point_xyzz *intermediateResultsStage1RegionA, *intermediateResultsStage1RegionB;
-    point_xyzz *intermediateResultsStage2RegionA, *intermediateResultsStage2RegionB;
     point_xyzz *resultsRegionA, *resultsRegionB;
+
+    point_xyzz* intermediateResultsRegionA[num_kernel_calls - 1];
+    point_xyzz* intermediateResultsRegionB[num_kernel_calls - 1];
 
     cudaMalloc(&pointsRegionA, sizeof(affine_point) * num_points);
     cudaMalloc(&pointsRegionB, sizeof(affine_point) * num_points);
-    cudaMalloc(&intermediateResultsStage1RegionA, sizeof(point_xyzz) * num_intermediate_results_stage1);
-    cudaMalloc(&intermediateResultsStage1RegionB, sizeof(point_xyzz) * num_intermediate_results_stage1);
-    cudaMalloc(&intermediateResultsStage2RegionA, sizeof(point_xyzz) * num_intermediate_results_stage2);
-    cudaMalloc(&intermediateResultsStage2RegionB, sizeof(point_xyzz) * num_intermediate_results_stage2);
+
     cudaMalloc(&resultsRegionA, sizeof(point_xyzz) * num_results);
     cudaMalloc(&resultsRegionB, sizeof(point_xyzz) * num_results);
+
+    for (int i = 0; i < num_kernel_calls - 1; i++) {
+        cudaMalloc(&intermediateResultsRegionA[i], sizeof(point_xyzz) * num_points / pow(2, i + 1));
+        cudaMalloc(&intermediateResultsRegionB[i], sizeof(point_xyzz) * num_points / pow(2, i + 1));
+    }
 
     affine_point resA;
     affine_point resB;
@@ -125,9 +127,7 @@ int main() {
         // Wait for the GPU to finish
         cudaStreamSynchronize(memoryStreamHostToDevice); 
         cudaStreamSynchronize(memoryStreamDeviceToHost);
-        cudaStreamSynchronize(kernel1);
-        cudaStreamSynchronize(kernel2);
-        cudaStreamSynchronize(kernel3);
+        cudaDeviceSynchronize();
 
         if (sem_trywait(sem_points_full) == -1) {
             // No new data
@@ -150,75 +150,63 @@ int main() {
 
         // Stage 2: Accumulate points
         if (oldStateRegionA[0] & !oldStateRegionA[1]) {
-            accumulate_kernel<<<num_intermediate_results_stage1 / 32, 32, 0, kernel1>>>(intermediateResultsStage1RegionA, pointsRegionA, num_points);
+            add_points_kernel<<<num_points / 2 / 32, 32, 0, kernel>>>(intermediateResultsRegionA[0], pointsRegionA, num_points);
+            #pragma unroll
+            for (int i = 1; i < num_kernel_calls - 1; i++) {
+                add_points_kernel<<<num_points / pow(2, i + 1) / 32, 32, 0, kernel>>>(intermediateResultsRegionA[i], intermediateResultsRegionA[i - 1], num_points / pow(2, i));
+            }
+            add_points_kernel<<<num_results / 32, 32, 0, kernel>>>(resultsRegionA, intermediateResultsRegionA[num_kernel_calls - 2], num_points / pow(2, num_kernel_calls - 1));
             newStateRegionA[0] = false;
             newStateRegionA[1] = true;
         } else if (oldStateRegionB[0] & !oldStateRegionB[1]) {
-            accumulate_kernel<<<num_intermediate_results_stage1 / 32, 32, 0, kernel1>>>(intermediateResultsStage1RegionB, pointsRegionB, num_points);
+            add_points_kernel<<<num_points / 2 / 32, 32, 0, kernel>>>(intermediateResultsRegionB[0], pointsRegionB, num_points);
+            #pragma unroll
+            for (int i = 1; i < num_kernel_calls - 1; i++) {
+                add_points_kernel<<<num_points / pow(2, i + 1) / 32, 32, 0, kernel>>>(intermediateResultsRegionB[i], intermediateResultsRegionB[i - 1], num_points / pow(2, i));
+            }
+            add_points_kernel<<<num_results / 32, 32, 0, kernel>>>(resultsRegionB, intermediateResultsRegionB[num_kernel_calls - 2], num_points / pow(2, num_kernel_calls - 1));
             newStateRegionB[0] = false;
             newStateRegionB[1] = true;
         }
 
-        // Stage 3: Accumulate intermediate results
+        // Stage 3: Copy results to host
         if (oldStateRegionA[1] & !oldStateRegionA[2]) {
-            accumulate_kernel<<<num_intermediate_results_stage2 / 32, 32, 0, kernel2>>>(intermediateResultsStage2RegionA, intermediateResultsStage1RegionA, num_intermediate_results_stage1);
+            cudaMemcpyAsync(reduceA, resultsRegionA, sizeof(point_xyzz) * num_results, cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
             newStateRegionA[1] = false;
             newStateRegionA[2] = true;
         } else if (oldStateRegionB[1] & !oldStateRegionB[2]) {
-            accumulate_kernel<<<num_intermediate_results_stage2 / 32, 32, 0, kernel2>>>(intermediateResultsStage2RegionB, intermediateResultsStage1RegionB, num_intermediate_results_stage1);
+            cudaMemcpyAsync(reduceB, resultsRegionB, sizeof(point_xyzz) * num_results, cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
             newStateRegionB[1] = false;
             newStateRegionB[2] = true;
         }
 
-        // Stage 4: Accumulate intermediate results, pt. 2
+        // Stage 4: Reduce results
         if (oldStateRegionA[2] & !oldStateRegionA[3]) {
-            accumulate_kernel<<<num_results / 32, 32, 0, kernel3>>>(resultsRegionA, intermediateResultsStage2RegionA, num_intermediate_results_stage2);
+            resA = host_reduce(reduceA, num_results);
             newStateRegionA[2] = false;
             newStateRegionA[3] = true;
         } else if (oldStateRegionB[2] & !oldStateRegionB[3]) {
-            accumulate_kernel<<<num_results / 32, 32, 0, kernel3>>>(resultsRegionB, intermediateResultsStage2RegionB, num_intermediate_results_stage2);
+            resB = host_reduce(reduceB, num_results);
             newStateRegionB[2] = false;
             newStateRegionB[3] = true;
         }
 
-        // Stage 5: Copy results to host
-        if (oldStateRegionA[3] & !oldStateRegionA[4]) {
-            cudaMemcpyAsync(reduceA, resultsRegionA, sizeof(point_xyzz) * num_results, cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
-            newStateRegionA[3] = false;
-            newStateRegionA[4] = true;
-        } else if (oldStateRegionB[3] & !oldStateRegionB[4]) {
-            cudaMemcpyAsync(reduceB, resultsRegionB, sizeof(point_xyzz) * num_results, cudaMemcpyDeviceToHost, memoryStreamDeviceToHost);
-            newStateRegionB[3] = false;
-            newStateRegionB[4] = true;
-        }
-
-        // Stage 6: Reduce results
-        if (oldStateRegionA[4] & !oldStateRegionA[5]) {
-            resA = host_reduce(reduceA, num_results);
-            newStateRegionA[4] = false;
-            newStateRegionA[5] = true;
-        } else if (oldStateRegionB[4] & !oldStateRegionB[5]) {
-            resB = host_reduce(reduceB, num_results);
-            newStateRegionB[4] = false;
-            newStateRegionB[5] = true;
-        }
-
-        if (oldStateRegionA[5]) {
+        if (oldStateRegionA[3]) {
             // new results in resA
-            newStateRegionA[5] = false;
+            newStateRegionA[3] = false;
             sem_wait(sem_results_empty);
             memcpy(shm_results, &resA, sizeof(affine_point));
             sem_post(sem_results_full);
-        } else if (oldStateRegionB[5]) {
+        } else if (oldStateRegionB[3]) {
             // new results in resB
-            newStateRegionB[5] = false;
+            newStateRegionB[3] = false;
             sem_wait(sem_results_empty);
             memcpy(shm_results, &resB, sizeof(affine_point));
             sem_post(sem_results_full);
         }
 
         // Update state
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 4; i++) {
             oldStateRegionA[i] = newStateRegionA[i];
             oldStateRegionB[i] = newStateRegionB[i];
         }
@@ -228,8 +216,7 @@ int main() {
     // Destroy streams
     cudaStreamDestroy(memoryStreamDeviceToHost);
     cudaStreamDestroy(memoryStreamHostToDevice);
-    cudaStreamDestroy(kernel1);
-    cudaStreamDestroy(kernel2);
+    cudaStreamDestroy(kernel);
 
     printf("Destroyed streams\n");
 

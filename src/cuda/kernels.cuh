@@ -58,6 +58,19 @@ __global__ void add_points_kernel(point_xyzz *results, const affine_point *point
 	}
 }
 
+// Adds two xyzz points and returns the result in xyzz coordinates
+__global__ void add_points_kernel(point_xyzz *results, const point_xyzz *points, uint32_t num_points) {
+
+	uint32_t globalThreadId = blockIdx.x * blockDim.x + threadIdx.x;
+	uint32_t globalStride = blockDim.x * gridDim.x;
+
+	for (uint32_t j = 2 * globalThreadId; j < num_points; j += 2 * globalStride) {
+
+		// Perform mixed addition
+		results[j / 2] = add_2008_s(&points[j], &points[j + 1]);
+	}
+}
+
 // Adds two affine points and returns the result in xyzz coordinates
 __global__ void accumulate_kernel(point_xyzz *results, const affine_point *points, uint32_t num_points) {
 
@@ -132,7 +145,7 @@ void add_points(T *results, const affine_point *points, uint32_t num_points) {
     cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
 
     // Launch the kernel
-    add_points_kernel<<<1024, 32>>>(results_d, points_d, num_points);
+    add_points_kernel<<<num_points / 2 / 32, 32>>>(results_d, points_d, num_points);
 
     // Wait for the GPU to finish
     cudaDeviceSynchronize();

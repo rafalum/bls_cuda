@@ -2,6 +2,7 @@
 #include <gmp.h>
 #include <cstdint>
 #include <time.h>
+#include <math.h>
 
 #include "../src/host.cu"
 
@@ -49,7 +50,147 @@ void read_points_from_file(affine_point *points, uint32_t num_points, const char
     mpz_clear(big_num);
 }
 
-int main() {
+/***
+ * This function measures the performance of reducing 64k points down to 2k points
+ * using one accumulation kernel.
+ ***/
+int bench_accumulation_kernel() {
+
+    cudaFree(0);
+
+    int num_points = 1024 * 64;
+    int num_results = 2048;
+
+    // Allocate page-locked memory for points
+    affine_point* points;
+    cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
+
+    // Read points from file
+    read_points_from_file(points, num_points, "bls12-381_points.txt");
+
+    // Allocate page-locked memory for results
+    point_xyzz* results;
+    cudaHostAlloc(&results, num_results * sizeof(point_xyzz), cudaHostAllocDefault);
+
+    // Allocate device memory
+    affine_point *points_d;
+    point_xyzz *results_d;
+
+    cudaMalloc(&points_d, sizeof(affine_point) * num_points);
+    cudaMalloc(&results_d, sizeof(point_xyzz) * num_results);
+
+    cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
+
+    // Cuda event to measure time
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    // Launch the kernel (each thread is responsible for <num_points_per_thread> points)
+    accumulate_kernel<<<num_results / 32, 32>>>(results_d, points_d, num_points);
+
+    // Wait for the GPU to finish
+    cudaDeviceSynchronize();
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+
+    printf("############# Perfomance #############\n");
+    printf("-> accumulation kernel\n");
+    printf("Reduced %d to %d in: %f ms\n", num_points, num_results, milliseconds);
+    printf("######################################\n");
+
+    // Free memory
+    cudaFree(points_d);
+    cudaFree(results_d);
+    cudaFreeHost(points);
+    cudaFreeHost(results);
+
+    return 0;
+}
+
+
+/***
+ * This function measures the performance of reducing 64k points down to 2k points
+ * using a series of subsequent addition kernels.
+ ***/
+int bench_addition_kernel(){
+    
+        cudaFree(0);
+    
+        int num_points = 1024 * 64;
+        int num_results = 2048;
+
+        int num_kernel_calls = log2(num_points / num_results);
+    
+        // Allocate page-locked memory for points
+        affine_point* points;
+        cudaHostAlloc(&points, num_points * sizeof(affine_point), cudaHostAllocDefault);
+    
+        // Read points from file
+        read_points_from_file(points, num_points, "bls12-381_points.txt");
+    
+        // Allocate page-locked memory for results
+        point_xyzz* results;
+        cudaHostAlloc(&results, num_results * sizeof(point_xyzz), cudaHostAllocDefault);
+    
+        // Allocate device memory
+        affine_point *points_d;
+        point_xyzz *results_d;
+
+        cudaMalloc(&points_d, sizeof(affine_point) * num_points);
+        cudaMalloc(&results_d, sizeof(point_xyzz) * num_results);
+
+        point_xyzz* intermediate_results[num_kernel_calls - 1];
+        for (int i = 0; i < num_kernel_calls - 1; i++) {
+            cudaMalloc(&intermediate_results[i], sizeof(point_xyzz) * num_points / pow(2, i + 1));
+        }
+    
+        cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
+
+        // Cuda event to measure time
+        cudaEvent_t start, stop;
+        cudaEventCreate(&start);
+        cudaEventCreate(&stop);
+        cudaEventRecord(start);
+    
+        // Launch the first kernel
+        add_points_kernel<<<num_points / 2 / 32, 32>>>(intermediate_results[0], points_d, num_points);
+        #pragma unroll
+        for (int i = 1; i < num_kernel_calls - 1; i++) {
+            add_points_kernel<<<num_points / pow(2, i + 1) / 32, 32>>>(intermediate_results[i], intermediate_results[i - 1], num_points / pow(2, i));
+        }
+        add_points_kernel<<<num_results / 32, 32>>>(results_d, intermediate_results[num_kernel_calls - 2], num_points / pow(2, num_kernel_calls - 1));
+
+        // Wait for the GPU to finish
+        cudaDeviceSynchronize();
+
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float milliseconds = 0;
+        cudaEventElapsedTime(&milliseconds, start, stop);
+
+        printf("############# Perfomance #############\n");
+        printf("-> %d subsequent addition kernels\n", num_kernel_calls);
+        printf("Reduced %d to %d in: %f ms\n", num_points, num_results, milliseconds);
+        printf("######################################\n");
+
+        // Copy result back to host
+        cudaMemcpy(results, results_d, sizeof(point_xyzz) * num_results, cudaMemcpyDeviceToHost);
+
+        // Free memory
+        cudaFree(points_d);
+        cudaFree(results_d);
+        cudaFreeHost(points);
+        cudaFreeHost(results);
+
+        return 0;
+}
+
+int bench_pipeline() {
 
     int num_batches = 1000;
 
@@ -236,4 +377,11 @@ int main() {
 
     return 0;
 
+}
+
+int main() {
+    bench_accumulation_kernel();
+    bench_addition_kernel();
+    bench_pipeline();
+    return 0;
 }

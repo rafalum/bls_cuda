@@ -50,6 +50,13 @@ void read_points_from_file(affine_point *points, uint32_t num_points, const char
     mpz_clear(big_num);
 }
 
+__global__ void warmupKernel() {
+    float x = 1.0;
+    for (int i = 0; i < 100; i++) {
+        x += i;
+    }
+}
+
 /***
  * This function measures the performance of reducing 64k points down to 2k points
  * using one accumulation kernel.
@@ -80,6 +87,10 @@ int bench_accumulation_kernel() {
     cudaMalloc(&results_d, sizeof(point_xyzz) * num_results);
 
     cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
+
+    // Launch a warmup kernel
+    warmupKernel<<<32, 32>>>();
+    cudaDeviceSynchronize(); 
 
     // Cuda event to measure time
     cudaEvent_t start, stop;
@@ -150,6 +161,10 @@ int bench_addition_kernel(){
         }
     
         cudaMemcpy(points_d, points, sizeof(affine_point) * num_points, cudaMemcpyHostToDevice);
+
+        // Launch a warmup kernel
+        warmupKernel<<<32, 32>>>();
+        cudaDeviceSynchronize(); 
 
         // Cuda event to measure time
         cudaEvent_t start, stop;
@@ -252,6 +267,10 @@ int bench_pipeline() {
 
     affine_point resA;
     affine_point resB;
+
+    // Launch a warmup kernel
+    warmupKernel<<<32, 32>>>();
+    cudaDeviceSynchronize(); 
 
     // take in new data every iteration
     bool new_data = true;
